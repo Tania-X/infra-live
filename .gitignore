@@ -1,0 +1,32 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Node / React ----
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# ---- secrets / state ----
+.env
+.env.*
+*.pem
+*.key
+credentials*
+.terraform/
+reconciler/.cache/
+
+# ---- os ----
+.DS_Store
+Thumbs.db
+
+# ---- editor ----
+.idea/
+.vscode/
