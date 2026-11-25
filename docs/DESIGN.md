@@ -130,10 +130,11 @@ rules:
 
 约束：
 
-- 字段白名单固定（上表 8 个字段），未知字段直接校验失败。
-- `description` 限长 64，禁止换行。
+- 字段白名单固定为 8 个：`direction` / `protocol` / `port_range` / `source_cidr` / `action` / `priority` / `description` / `ip_version`（默认 `ipv4`，YAML 里通常省略）。未知字段直接校验失败。
+- `description` 限长 64，禁止换行（防 PR 评论 Markdown 注入）。
 - `port_range`、`source_cidr`、`direction`、`protocol`、`action` 全部用枚举 / 正则校验。
-- 同一 `(direction, protocol, port_range, source_cidr)` 视为同一条规则的唯一键，用于 diff 对齐。
+- **写进模型前先归一化**：`443` → `443/443`；`198.51.100.7` → `198.51.100.7/32`；`203.0.113.7/24` → `203.0.113.0/24`；`-1/-1` 表示全部端口。不做归一化会让同一语义产生假变更。
+- 同一 `(direction, protocol, port_range, source_cidr, ip_version)` 视为同一条规则的唯一键，用于 diff 对齐；重复键直接校验失败。
 
 ### 4.2 意图 Intent（LLM 的唯一合法输出）
 
@@ -173,23 +174,29 @@ rules:
   "resource": "security_group:sg-bp1xxxxxxxx",
   "changes": [
     {
-      "op": "add",
+      "op": "replace",
       "key": "ingress/tcp/443/203.0.113.0/24",
-      "after": { "...": "..." },
-      "risk": "medium"
+      "before": { "source_cidr": "0.0.0.0/0", "...": "..." },
+      "after": { "source_cidr": "203.0.113.0/24", "...": "..." }
     },
     {
-      "op": "remove",
-      "key": "ingress/tcp/443/0.0.0.0/0",
-      "before": { "...": "..." },
-      "risk": "high"
+      "op": "add",
+      "key": "ingress/tcp/8080/10.0.0.0/8",
+      "before": null,
+      "after": { "...": "..." }
     }
   ],
-  "summary": "1 条新增，1 条删除",
-  "risk": "high",
-  "reversible": true
+  "summary": "1 处修改，1 处新增"
 }
 ```
+
+`op` 只有三种：`add` / `remove` / `replace`。
+
+- 安全组规则本质是集合，所谓「修改」其实是删一条加一条。
+- 但给人看的时候 `443 从 0.0.0.0/0 改成 203.0.113.0/24` 比「一删一加」清楚得多，
+  所以 `diff.py` 会把**同方向 + 同协议 + 同端口**的删除与新增配对成一条 `replace`。
+- `risk` 不写在 Diff 里，由 `risk.py` 单独产出（见 4.5）。拆开是为了让 diff 保持「事实」，
+  风险是「判断」，两者混在一起以后改规则就要重算 diff。
 
 ### 4.4 Proposal 状态机
 
@@ -212,16 +219,22 @@ infra-live/
 ├── envs/
 │   └── dev/
 │       ├── security-groups/
-│       │   └── web-sg.yaml          # 安全组期望状态
+│       │   ├── web-sg.yaml          # 安全组期望状态（正常场景）
+│       │   └── web-sg-risk-demo.yaml # 反面样本：触发 blocked
 │       └── inventory.yaml           # 只读盘点（实例列表快照，不参与执行）
+├── fixtures/
+│   └── web-sg.current.json          # 云端快照，离线当「云端」用
 ├── reconciler/
-│   ├── main.py                      # CLI: plan / apply
-│   ├── models.py                    # Pydantic: schema + 校验
-│   ├── providers/
-│   │   └── aliyun.py                # ECS OpenAPI 封装（describe / mutate）
-│   ├── diff.py                      # 期望 vs 实际 → Diff
-│   ├── risk.py                      # 规则引擎判风险（不依赖模型）
-│   └── render.py                    # Diff → Markdown（贴 PR 评论）
+│   ├── main.py                      # CLI: plan（apply 待 M1）
+│   ├── models.py                    # Pydantic: schema + 白名单 + 归一化
+│   ├── diff.py                      # 纯函数：期望 vs 实际 → Diff
+│   ├── risk.py                      # 纯函数：Diff → 风险等级
+│   ├── render.py                    # 纯函数：Diff → Markdown
+│   └── providers/
+│       ├── base.py                  # Provider 协议（只有 describe 一个方法）
+│       ├── fixture.py               # 离线：读 JSON 快照
+│       └── aliyun.py                # 在线：ECS OpenAPI（只读已写，写待 M1）
+├── tests/                           # 纯函数单测（48 条，无网络依赖）
 ├── proposals/                       # 每次提案的留档（JSON + 原话）
 │   └── .gitkeep
 ├── .github/
@@ -230,6 +243,7 @@ infra-live/
 │       └── apply.yml                # push main：算 diff 并执行
 ├── docs/
 │   └── DESIGN.md                    # 本文档
+├── pyproject.toml
 ├── .gitignore
 └── README.md
 ```
@@ -238,14 +252,15 @@ infra-live/
 
 | 模块 | 职责 | 不该做的事 |
 |---|---|---|
-| `models.py` | 把 YAML/JSON 校验成强类型对象 | 不碰云 API |
-| `providers/aliyun.py` | 唯一与阿里云通信的地方 | 不做业务判断 |
+| `models.py` | 把 YAML/JSON 校验成强类型对象、归一化 | 不碰云 API |
+| `providers/` | 唯一与云通信的地方 | 不做业务判断 |
 | `diff.py` | 纯函数：期望 + 实际 → Diff | 不发请求 |
 | `risk.py` | 纯函数：Diff → 风险等级 | 不调用模型 |
-| `render.py` | Diff → 人话 Markdown | 不做决策 |
+| `render.py` | 纯函数：Diff → 人话 Markdown | 不做决策 |
 | `main.py` | 编排：读 → 校验 → diff → 输出/执行 | 不内联业务规则 |
 
-**`diff.py` / `risk.py` / `render.py` 都是纯函数**，意味着可以单测覆盖，不需要连云端。这是整个项目最值得写好测试的部分。
+**`diff.py` / `risk.py` / `render.py` 都是纯函数**，意味着可以单测覆盖，不需要连云端。
+这是整个项目最值得写好测试的部分，M0 的 48 条单测全部落在这三个模块和 `models.py` 上。
 
 ---
 
@@ -347,13 +362,16 @@ Git 记的是「结果」，但排查时要看「当初为什么这么改」。�
 
 ## 9. 里程碑
 
-### M0（先跑通「只读 + diff」，不接模型）
+### M0 ✅ 已完成（先跑通「只读 + diff」，不接模型）
 
-- [ ] `models.py` + `diff.py` + `risk.py` + `render.py` + 单测
-- [ ] `providers/aliyun.py`：`describe_security_group` 只读
-- [ ] CLI：`python -m reconciler.main plan --file envs/dev/security-groups/web-sg.yaml`
-- [ ] 用手改 YAML → 跑 plan → 看到人话 diff（这一步不依赖 GitHub）
-- **验收**：能对着真实安全组，算出「多一条 / 少一条 / 改一条」
+- [x] `models.py` + `diff.py` + `risk.py` + `render.py`（纯函数）
+- [x] 单测 48 条，无网络依赖（`pytest` 0.4s 跑完）
+- [x] `providers/fixture.py`：离线快照 provider
+- [x] `providers/aliyun.py`：`describe_security_group` 只读（**已写，未联调**）
+- [x] CLI：`python -m reconciler.main plan --file ... --current ... | --live`
+- [x] 退出码 0 / 1 / 2 供 CI 当门禁
+- **验收（离线部分）**：手改 YAML → 跑 plan → 看到人话 diff，能区分「新增 / 删除 / 修改」三种形态；对 Redis 全网开放能判 blocked 并 exit 2
+- **验收（在线部分）**：待用户提供安全组 ID 与凭证后联调
 
 ### M1（接 Agent + GitHub）
 
@@ -363,6 +381,15 @@ Git 记的是「结果」，但排查时要看「当初为什么这么改」。�
 - [ ] GitHub：建分支 + commit + 开 PR + 贴 diff 评论
 - [ ] `plan.yml` / `apply.yml`
 - **验收**：说一句话 → 生成 PR → merge → 安全组真的变了 → PR 有执行回写
+
+### M1.5（RAG：把「模糊指代」落到确定资源）
+
+- [ ] 资源卡片入库（安全组 / 实例的 id、名称、标签、用途摘要）
+- [ ] 知识库入库（安全基线、变更 SOP、故障手册），带 `effective_from` / `status`
+- [ ] 变更历史自动入库（每次 merge 后写一条「问题 → 意图 → 结果」）
+- [ ] 检索路由：精确 ID → 结构化查询；模糊指代 → 卡片向量 + 用户确认；规范 → 文档 RAG
+- [ ] 评测集 30~50 条，指标只看「资源命中率」和「文档 Recall@3」
+- **前置条件**：M1 已跑通，且至少有一批真实变更历史
 
 ### M2（前端 + 收敛校验）
 
@@ -379,3 +406,111 @@ Git 记的是「结果」，但排查时要看「当初为什么这么改」。�
 3. **仓库位置**：当前在 `C:\Users\Administrator\Projects\infra-live`，是否合适。
 4. **前端时机**：M2 再动，还是先把 API + CLI 打磨好？
 5. **ECS 现状**：拿到安全组后，`web-sg.yaml` 以现状为初始值（即「零 diff」起步）。
+
+---
+
+## 11. Agent 平台与 RAG（参考公司技术栈）
+
+### 11.1 那套栈对应到本项目的位置
+
+| 技术 | 是什么 | 对应本项目 |
+|---|---|---|
+| **Agno** | Python Agent 框架（Agent / Team / Workflow，Apache 2.0） | `aiforge` 的 `loop.py` + `registry.py` + `memory.py` |
+| **AgentOS** | Agno 的 FastAPI 运行时 + Control Plane UI + session 存储 + HITL | FastAPI + 会话存储 |
+| **Langfuse** | LLM 可观测：trace / 成本 / prompt 版本 / 数据集 / 评测，可自托管 | 目前**完全缺失**的一层 |
+| **Next.js** | React 框架（SSR / 路由） | §8 的前端 |
+| **Docker** | 部署形态 | CI runner 的固定环境 |
+
+**关键判断：Agno + AgentOS 是「Agent 平台」，不是「GitOps 执行器」。**
+
+它的 approval / pause 发生在应用内，确认之后由服务端自己拿凭证执行。
+本项目要求的是：审批 = merge，执行权只在 CI，回滚 = revert。
+两者不冲突，但不是一回事。
+
+### 11.2 接入方式
+
+```
+Agno / AgentOS   →  对话 + 工具调用 + 会话 + 观测
+GitOps 层（本仓库） →  提案 + PR + CI 执行 + 回滚
+连接点：propose 工具，Agent 只拿到 proposal_id，拿不到执行权
+```
+
+1. **先单 Agent，不用 Team / Workflow。** 只有一个 Agent、几个工具时，引入 Team 只会拉长链路、增加调试难度。等真出现「一句话要同时查安全组和 ECS 并交叉判断」再上 Workflow。
+2. **两级确认**：Agno 的 pause 只用于「轻确认」（参数歧义、目标不明确，如「改 web-sg 还是 app-sg」）；真正的授权走 Git PR。「轻确认解决歧义，重审批解决授权」，不要用同一套机制承担两件事。
+3. **Langfuse 必加，优先级高于前端。** 每次对话一个 trace，每个工具调用一个 span，metadata 带 `proposal_id` / `pr_number`，可以从 Langfuse 直接跳 PR。
+   - **必须定脱敏策略**：trace 里会有实例 ID、内网 IP、安全组规则。要么自托管，要么写入前打码。
+4. **存储分离**：`agentos.*`（session / memory，可丢）与 `infra.*`（proposal / 审计，不可丢）分库或分 schema。混在一起后换框架或清会话会连带搞乱审计记录。
+5. **锁定版本**：Agno 迭代快（v2 有破坏性改动），`pyproject.toml` 用精确版本，不用 `>=`。
+6. **Docker 只用在 CI runner**：本地开发不需要。真正需要的是让 `reconciler` 跑在固定镜像里，避免「本地 py3.12 正常、runner 上 py3.13 挂了」。
+
+### 11.3 RAG：先分清它解决哪个问题
+
+四类用途，优先级不同：
+
+| # | 用途 | 解决什么 | 优先级 |
+|---|---|---|---|
+| 1 | **资源语义检索**（实体链接） | 「跑官网的那台」「昨天新建的安全组」→ 精确 `resource_id` | **最高** |
+| 2 | **运维知识库** | 「我们的安全基线是什么」「变更走什么流程」 | 高 |
+| 3 | **变更历史检索** | 「上次类似的改动怎么做的」「这个端口为什么开着」 | 中 |
+| 4 | 云 API / 错误码检索 | Agent 自己排错 | 低（可后置） |
+
+**用途 1 才是真痛点。** GitOps 要求精确 ID，而用户永远说「官网那个安全组」。
+这一步「模糊描述 → 确定资源」是 RAG 该干的活，也是本项目跟「文档问答机」的分界线。
+
+做法：每个资源一张「资源卡片」，同时保留结构化字段和一段语义摘要：
+
+```yaml
+id: sg-bp1xxxxxxxx
+type: security_group
+name: web-sg
+region: cn-hangzhou
+tags: {env: dev, app: official-site, owner: max}
+summary: "官网对外服务的安全组，开放 80/443，绑定 2 台 ECS"
+```
+
+检索时**双路**：
+
+- 用户给 **ID / 精确名称** → 结构化精确查询，**不要走向量**；
+- 用户给 **语义描述** → 卡片向量检索，取 top-3，**回显「ID + 名称 + 用途」让用户确认**。
+
+> 选错资源比改错配置更可怕，所以候选必须人工确认，不能让模型自己挑一个就往下走。
+
+**知识库要带时间维度。** 运维规范会变，2023 版说允许、2025 版说禁止，两版都在库里就是随机答案。文档 metadata 必须有 `effective_from` / `supersedes` / `status: active|deprecated`，检索时过滤 `active`，回答强制带出处。
+
+**变更历史可以自动构建。** 每次 PR merge 后写一条「问题 → 意图 → 结果 → PR 号」进库。天然增量、天然有版本、天然可信，还正好回答最高频的「上次这事怎么弄的」。
+
+### 11.4 检索路由（不要什么都向量检索）
+
+```
+用户 query
+   ↓ 意图分类（规则优先，别用大模型）
+├─ 含 ID / 精确名称 ──────► 结构化精确查询
+├─ 模糊指代资源 ──────────► 资源卡片向量检索 + 用户确认
+├─ 问规范 / 流程 ─────────► 文档 RAG（active 过滤 + 强制引用）
+├─ 问历史 ────────────────► PR / 提案历史 RAG
+└─ 要变更 ────────────────► 走 propose 链路
+```
+
+**红线：RAG 结果只能作依据，绝不能直接生成变更意图。** 否则文档里一句「临时可以放开 0.0.0.0/0」就可能被模型当成授权，绕过 `risk.py`。
+
+### 11.5 选型（尽量少加组件）
+
+| 环节 | 选择 | 理由 |
+|---|---|---|
+| 向量库 | **pgvector** | 本来就要 Postgres 存 proposal，一个库解决 |
+| Embedding | **bge-m3** 或阿里云百炼 | 中文好；bge-m3 同时出稠密 + 稀疏向量 |
+| 切分 | Markdown 按标题切，300~600 字，overlap 10% | 手册类文档结构清晰 |
+| 混合检索 | pgvector + PG 全文检索（`tsvector`），RRF 融合 | 资源名 / 错误码需要精确匹配 |
+| Rerank | 先不做 | 库小的时候收益不明显 |
+| 框架 | 先用 **Agno 内置 Knowledge** | 已封装 reader + vector store + search，接口不变，不够用再换 |
+
+**评测集**（30~50 条）是唯一能证明 RAG 变好还是变坏的东西：
+
+```yaml
+- question: "官网那个安全组开了哪些端口"
+  expect_resource: sg-bp1xxxxxxxx
+  expect_docs: [security-baseline-v2.md#3.2]
+```
+
+指标只看两个：**资源命中率**、**文档 Recall@3**，再加一个「最终答案是否引用了正确来源」。
+没有评测集时，改一次 chunk 大小、换一次 embedding 完全无法判断好坏。

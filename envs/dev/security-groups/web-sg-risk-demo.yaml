@@ -1,0 +1,39 @@
+# 故意写坏的一份：把 Redis 端口对全网开放。
+# 用来验证 risk.py 的 blocked 判定，以及 CLI 的退出码 2。
+# 不要 merge，这只是个实验样本。
+kind: security_group
+id: sg-bp1a2b3c4d5e
+name: web-sg
+region: cn-hangzhou
+rules:
+  - direction: ingress
+    protocol: tcp
+    port_range: "22/22"
+    source_cidr: 0.0.0.0/0
+    action: accept
+    priority: 1
+    description: "SSH 临时放开"
+
+  - direction: ingress
+    protocol: tcp
+    port_range: "443/443"
+    source_cidr: 0.0.0.0/0
+    action: accept
+    priority: 2
+    description: "HTTPS"
+
+  - direction: ingress
+    protocol: tcp
+    port_range: "80/80"
+    source_cidr: 0.0.0.0/0
+    action: accept
+    priority: 3
+    description: "HTTP 跳转"
+
+  - direction: ingress
+    protocol: tcp
+    port_range: "6379/6379"
+    source_cidr: 0.0.0.0/0
+    action: accept
+    priority: 4
+    description: "Redis（这是反面教材）"
