@@ -7,6 +7,11 @@
 - CI 是唯一有执行权的一方
 - AI 永远只能「提议」，不能「执行」
 
+两份文档分工：
+
+- [docs/DESIGN.md](docs/DESIGN.md) —— 变更怎么安全落下去（提案 / PR / CI / 回滚）
+- [docs/DOMAIN.md](docs/DOMAIN.md) —— 落下去的到底是什么（防火墙五层载体 / 六个限界上下文 / 22 条业务规则 / DDD 建模）
+
 ## 当前阶段
 
 `v0.2` — **M0 已完成**：只读 + diff 链路可跑通，有单测，不依赖任何云凭证。
@@ -56,7 +61,7 @@ reconciler/          无状态收敛器：读云端 → 算 diff → 执行差�
 tests/               纯函数单测，48 条
 proposals/           每次提案的原话 + 意图 + diff + 风险留档
 .github/workflows/   plan（PR，只读） / apply（main，可写）
-docs/                设计文档
+docs/                设计文档（DESIGN.md）+ 领域模型（DOMAIN.md）
 ```
 
 ## 设计要点
