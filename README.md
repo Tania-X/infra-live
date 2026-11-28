@@ -30,6 +30,7 @@ python3 -m venv .venv && .venv/bin/pip install pyyaml
 | `current.json` | 云端现状。用一份快照假装，还不真连云 |
 | `model.py` | 规范形 + 比对：`parse` / `dump` / `diff` |
 | `plan.py` | 判风险 + 打印 |
+| `propose.py` | 一句话 → 意图 JSON → 规则变更 |
 | `fmt.py` | 把 YAML 写成规范形 |
 | `tests.py` | 7 条行为测试，不依赖 pytest |
 
@@ -69,8 +70,30 @@ python3 -m venv .venv && .venv/bin/pip install pyyaml
 `修改` 是配对出来的，云上并没有"改一条规则"这个动作——它永远是删一条加一条。
 配成一行只是为了让人一眼看懂：`443 ← 0.0.0.0/0 → 203.0.113.0/24`。
 
+## AI 提案（`propose.py`）
+
+一句话变成一条规则变更，但**模型只填一个 JSON**：
+
+```bash
+export DEEPSEEK_API_KEY=...                                  # 只放环境变量
+.venv/bin/python propose.py "把 443 只允许 203.0.113.0/24 访问"
+.venv/bin/python propose.py --intent intent.example.json      # 不调模型，调试用
+.venv/bin/python propose.py "..." --write                     # 写回 YAML（不提交）
+```
+
+分工是这里唯一重要的事：
+
+| 谁 | 干什么 |
+|---|---|
+| 模型 | 只输出 `{"op": "set", "rule": {...}}` 或 `{"op": "remove", ...}` |
+| 代码 | 校验字段 → 套用到规则集 → 写规范形 YAML → 算 diff → 判风险 |
+
+模型不写 YAML、不判风险、不执行。它给的是"想要什么"，差多少、危不危险仍然是 `plan.py` 算的。
+模型多给一个字段（比如偷偷塞个 `"risk": "low"`），直接拒绝。
+
 ## 现在**不**做的事
 
-- 不连云、不写云、不调模型
+- 不连云、不写云（现状还是那份快照）
+- 模型只填字段，不写 YAML、不判风险、不执行
 - 不拆模块、不建目录树
 - 没有"不同比对策略"这种东西，`diff` 只有一个参数 `order_matters`

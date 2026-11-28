@@ -6,3 +6,7 @@ venv/
 
 # 系统
 .DS_Store
+
+# 密钥
+.env
+*.env

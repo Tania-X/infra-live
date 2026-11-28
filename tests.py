@@ -8,6 +8,7 @@
 
 import model
 import plan
+import propose
 
 
 def ruleset(*rules):
@@ -106,6 +107,42 @@ def test_bad_input_raises():
         except ValueError:
             continue
         raise AssertionError(f"应该报错：{payload}")
+
+
+# 8. 提案：同一个端口组只留一条，不会新旧并存
+def test_propose_set_replaces_whole_port_group():
+    base = ruleset(rule("443", "0.0.0.0/0"), rule("80", "0.0.0.0/0"))
+    intent = propose.parse_intent(
+        {"op": "set", "rule": rule("443/443", "203.0.113.0/24")}
+    )
+    updated = propose.apply_intent(base, intent)
+    peers = {(r["direction"], r["protocol"], r["ports"]): r["peer"] for r in updated["rules"]}
+    assert len(updated["rules"]) == 2
+    assert peers[("ingress", "tcp", "443/443")] == "203.0.113.0/24"
+
+
+# 9. 提案：删除按端口组来，不用给网段
+def test_propose_remove_by_port_group():
+    base = ruleset(rule("443", "0.0.0.0/0"), rule("80", "0.0.0.0/0"))
+    intent = propose.parse_intent(
+        {"op": "remove", "direction": "ingress", "protocol": "tcp", "ports": "80"}
+    )
+    updated = propose.apply_intent(base, intent)
+    assert [r["ports"] for r in updated["rules"]] == ["443/443"]
+
+
+# 10. 提案：模型多给字段 / 编造 op，一律拒绝
+def test_propose_rejects_unknown_shape():
+    for bad in (
+        {"op": "set", "rule": rule("443", "0.0.0.0/0"), "risk": "low"},
+        {"op": "delete", "rule": rule("443", "0.0.0.0/0")},
+        {"op": "remove", "direction": "ingress"},
+    ):
+        try:
+            propose.parse_intent(bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"应该拒绝：{bad}")
 
 
 def main():
