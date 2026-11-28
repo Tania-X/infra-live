@@ -18,3 +18,9 @@ rules:
     peer: 0.0.0.0/0
     action: accept
     note: "HTTP 跳转"
+  - direction: ingress
+    protocol: tcp
+    ports: 6379/6379
+    peer: 0.0.0.0/0
+    action: accept
+    note: "Redis 临时开放，方便联调"
