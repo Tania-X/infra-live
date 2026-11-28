@@ -21,6 +21,6 @@ rules:
   - direction: ingress
     protocol: tcp
     ports: 6379/6379
-    peer: 0.0.0.0/0
+    peer: 10.0.0.0/8
     action: accept
     note: "Redis 临时开放，方便联调"
