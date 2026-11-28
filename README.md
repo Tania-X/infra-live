@@ -13,16 +13,20 @@ python3 -m venv .venv && .venv/bin/pip install pyyaml
 .venv/bin/python fmt.py --check                   # 只检查（CI 用，不规范就返回 1）
 
 .venv/bin/python plan.py                          # 正常场景，退出码 0
-.venv/bin/python plan.py envs/web-sg-redis.yaml   # 反面场景，退出码 2
+.venv/bin/python plan.py demos/web-sg-redis.yaml   # 反面场景，退出码 2
 
 .venv/bin/python tests.py                         # 7 条行为测试
 ```
+
+打开 PR 时，GitHub Actions 会自动跑上面这三件事，把结果贴成评论，
+并按退出码决定这个 PR 是绿的还是红的。见 `.github/workflows/plan.yml`。
 
 ## 文件
 
 | 文件 | 是什么 |
 |---|---|
 | `envs/*.yaml` | 期望状态。人写的、Git 存的、以后 AI 也只写这个 |
+| `demos/*.yaml` | 反面样例，**CI 不检查**——故意写坏的样本不该让每次 PR 都变红 |
 | `current.json` | 云端现状。用一份快照假装，还不真连云 |
 | `model.py` | 规范形 + 比对：`parse` / `dump` / `diff` |
 | `plan.py` | 判风险 + 打印 |

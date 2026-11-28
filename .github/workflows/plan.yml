@@ -1,0 +1,93 @@
+name: plan
+
+# 只在会影响 plan 结果的东西变了时跑
+on:
+  pull_request:
+    paths:
+      - "envs/**"
+      - "current.json"
+      - "model.py"
+      - "plan.py"
+      - "fmt.py"
+      - ".github/workflows/plan.yml"
+
+# 这个 job 只需要读代码 + 写 PR 评论，不需要任何云凭证
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 安装依赖
+        run: pip install pyyaml
+
+      # 先卡格式：仓库里的 YAML 必须是规范形，否则提交前没跑 fmt
+      - name: 规范形检查
+        run: python fmt.py --check
+
+      - name: 行为测试
+        run: python tests.py
+
+      # 对 envs/ 下每一份期望状态跑一次 plan，把结果攒成一份 Markdown
+      - name: 生成 diff 报告
+        id: plan
+        shell: bash
+        run: |
+          set +e
+          report=/tmp/report.md
+          {
+            echo "<!-- plan-report -->"
+            echo "## 🔍 plan 预览"
+            echo ""
+            echo "对比 \`current.json\`（云端快照）。退出码：0 可合并 / 1 需人工确认 / 2 禁止合并。"
+            echo ""
+          } > "$report"
+
+          worst=0
+          while IFS= read -r file; do
+            {
+              echo "<details><summary><code>$file</code></summary>"
+              echo ""
+              echo '```'
+            } >> "$report"
+            python plan.py "$file" current.json >> "$report" 2>&1
+            code=$?
+            {
+              echo '```'
+              echo ""
+              echo "</details>"
+              echo ""
+            } >> "$report"
+            if [ "$code" -gt "$worst" ]; then worst=$code; fi
+          done < <(find envs -name '*.yaml' | sort)
+
+          echo "worst=$worst" >> "$GITHUB_OUTPUT"
+          cat "$report" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: 贴到 PR 评论
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --body-file /tmp/report.md
+
+      # 报告先贴出来，再按最严重的退出码决定这一步红不红
+      - name: 按退出码收尾
+        shell: bash
+        run: |
+          code="${{ steps.plan.outputs.worst }}"
+          echo "plan 退出码：$code"
+          if [ "$code" = "2" ]; then
+            echo "::error::存在禁止项（blocked），不允许合并"
+            exit 1
+          fi
+          if [ "$code" = "1" ]; then
+            echo "::error::存在高风险变更，需要人工逐条确认"
+            exit 1
+          fi
