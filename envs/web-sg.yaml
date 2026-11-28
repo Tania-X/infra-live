@@ -1,0 +1,20 @@
+name: web-sg
+rules:
+  - direction: ingress
+    protocol: tcp
+    ports: 22/22
+    peer: 198.51.100.7/32
+    action: accept
+    note: "SSH，仅固定出口 IP"
+  - direction: ingress
+    protocol: tcp
+    ports: 443/443
+    peer: 203.0.113.0/24
+    action: accept
+    note: "HTTPS，仅公司网段"
+  - direction: ingress
+    protocol: tcp
+    ports: 80/80
+    peer: 0.0.0.0/0
+    action: accept
+    note: "HTTP 跳转"

@@ -1,0 +1,29 @@
+{
+  "name": "web-sg",
+  "rules": [
+    {
+      "direction": "ingress",
+      "protocol": "tcp",
+      "ports": "22/22",
+      "peer": "0.0.0.0/0",
+      "action": "accept",
+      "note": "SSH 临时放开"
+    },
+    {
+      "direction": "ingress",
+      "protocol": "tcp",
+      "ports": "443/443",
+      "peer": "0.0.0.0/0",
+      "action": "accept",
+      "note": "HTTPS"
+    },
+    {
+      "direction": "ingress",
+      "protocol": "tcp",
+      "ports": "80/80",
+      "peer": "0.0.0.0/0",
+      "action": "accept",
+      "note": "HTTP 跳转"
+    }
+  ]
+}
